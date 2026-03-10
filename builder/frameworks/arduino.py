@@ -555,6 +555,66 @@ if config.has_option(current_env_section, "custom_sdkconfig"):
 if board_sdkconfig:
     flag_custom_sdkconfig = True
 
+# Auto-configure ULP support when ulp/ directory with sources is present on an
+# LP-Core MCU. Injects custom_sdkconfig entries to trigger lib recompilation
+# with ULP loader functions, and removes components that break the recompile.
+# Keep in sync with LP_CORE_MCUS in ulp_lp_core.py
+_lp_core_mcus = ("esp32c5", "esp32c6", "esp32p4")
+if mcu in _lp_core_mcus:
+    _ulp_dir = Path(project_dir) / "ulp"
+    if _ulp_dir.is_dir() and any(
+        f.suffix in (".c", ".S", ".s") for f in _ulp_dir.iterdir() if f.is_file()
+    ):
+        _ulp_sdkconfig_entries = [
+            "CONFIG_ULP_COPROC_ENABLED=y",
+            "CONFIG_ULP_COPROC_TYPE_LP_CORE=y",
+            # 8192 gives headroom beyond IDF's 4096 default. Users can
+            # override via custom_sdkconfig if they need more (or less).
+            "CONFIG_ULP_COPROC_RESERVE_MEM=8192",
+        ]
+        for entry in _ulp_sdkconfig_entries:
+            key = entry.split("=")[0]
+            if key not in entry_custom_sdkconfig:
+                entry_custom_sdkconfig += "\n" + entry
+        flag_custom_sdkconfig = True
+        config.set(current_env_section, "custom_sdkconfig",
+                   entry_custom_sdkconfig)
+
+        # Components that fail the lib-recompile build on most pioarduino
+        # targets. If future IDF versions fix these, they can be removed.
+        _ulp_component_remove = [
+            "espressif/esp_insights",
+            "espressif/esp_rainmaker",
+            "espressif/rmaker_common",
+            "espressif/esp_diag_data_store",
+            "espressif/esp_diagnostics",
+        ]
+        existing_removes = env.GetProjectOption("custom_component_remove", "")
+        new_removes = []
+        for comp in _ulp_component_remove:
+            if comp not in existing_removes:
+                new_removes.append(comp)
+        if new_removes:
+            combined = existing_removes.strip()
+            if combined:
+                combined += "\n"
+            combined += "\n".join(new_removes)
+            config.set(current_env_section, "custom_component_remove", combined)
+        flag_custom_component_remove = True
+
+        _ulp_lib_ignore = ["RainMaker", "Insights"]
+        existing_ignores = env.GetProjectOption("lib_ignore", [])
+        if isinstance(existing_ignores, str):
+            existing_ignores = [existing_ignores]
+        new_ignores = [lib for lib in _ulp_lib_ignore
+                       if lib not in existing_ignores]
+        if new_ignores:
+            config.set(current_env_section, "lib_ignore",
+                       existing_ignores + new_ignores)
+        flag_lib_ignore = True
+
+        print("Auto-configured ULP support: sdkconfig, component_remove, lib_ignore")
+
 extra_flags_raw = board.get("build.extra_flags", [])
 if isinstance(extra_flags_raw, list):
     extra_flags = " ".join(extra_flags_raw).replace("-D", " ")

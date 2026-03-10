@@ -40,16 +40,19 @@ LP_CORE_MCUS = {
         "peripherals_ld": "esp32c5.peripherals.ld",
         "has_lp_rom": False,
         "has_touch": False,
+        "march": "rv32imac_zicsr_zifencei",
     },
     "esp32c6": {
         "peripherals_ld": "esp32c6.peripherals.ld",
         "has_lp_rom": False,
         "has_touch": False,
+        "march": "rv32imac_zicsr_zifencei",
     },
     "esp32p4": {
         "peripherals_ld": "esp32p4.peripherals.ld",
         "has_lp_rom": True,
         "has_touch": True,
+        "march": "rv32imac_zicsr_zifencei",
     },
 }
 
@@ -119,14 +122,33 @@ LP_CORE_DIR = IDF_COMPONENTS / "ulp" / "lp_core" / "lp_core"
 LP_SHARED_DIR = IDF_COMPONENTS / "ulp" / "lp_core" / "shared"
 
 #
-# sdkconfig.h — use project-provided or auto-generate
-#
-# Note: custom_sdkconfig values specified via file:// or http:// URLs are not
-# resolved here. Provide ulp/sdkconfig.h in the project for full control.
+# sdkconfig.h resolution order:
+#   1. User-provided ulp/sdkconfig.h (explicit override)
+#   2. Recompiled sdkconfig.h from framework-arduinoespressif32-libs (most
+#      complete — has every CONFIG_* for the target after lib recompilation)
+#   3. Auto-generated minimal sdkconfig.h (fallback when no recompile happened)
 #
 
 USER_SDKCONFIG_H = ULP_DIR / "sdkconfig.h"
 GENERATED_SDKCONFIG_H = ULP_BUILD_DIR / "sdkconfig.h"
+
+
+def find_recompiled_sdkconfig_h():
+    memory_type = board.get(
+        "build.arduino.memory_type",
+        board.get("build.flash_mode", "dio") + "_qspi",
+    )
+    candidate = FW_LIBS_DIR / mcu / memory_type / "include" / "sdkconfig.h"
+    if not candidate.exists():
+        return None
+    try:
+        text = candidate.read_text()
+    except Exception:
+        return None
+    # Only use if it was recompiled with ULP enabled
+    if "CONFIG_ULP_COPROC_ENABLED" in text:
+        return candidate
+    return None
 
 
 def get_sdkconfig_value(key, default):
@@ -143,7 +165,46 @@ def get_sdkconfig_value(key, default):
     return default
 
 
-ULP_RESERVE_MEM = get_sdkconfig_value("CONFIG_ULP_COPROC_RESERVE_MEM", 8192)
+def validate_kconfig_defaults():
+    """Warn if IDF's Kconfig defaults have drifted from our hardcoded values.
+
+    This is a lightweight check — not a Kconfig parser. It just looks for
+    the expected default lines in the file. If the file is missing or the
+    format changed, it silently skips (the hardcoded values are still safe
+    as IDF's own ESP_STATIC_ASSERT catches struct size mismatches).
+    """
+    kconfig = IDF_COMPONENTS / "ulp" / "Kconfig"
+    if not kconfig.exists():
+        return
+    try:
+        text = kconfig.read_text()
+    except Exception:
+        return
+
+    if "default 0x10" not in text:
+        sys.stderr.write(
+            "Warning: IDF ULP Kconfig default for ULP_SHARED_MEM may have "
+            "changed.\n  Expected 'default 0x10' in %s\n"
+            "  LP-Core builds may need updating.\n" % kconfig
+        )
+
+    if "default 4096" not in text:
+        sys.stderr.write(
+            "Warning: IDF ULP Kconfig default for ULP_COPROC_RESERVE_MEM may "
+            "have changed.\n  Expected 'default 4096' in %s\n"
+            "  LP-Core builds may need updating.\n" % kconfig
+        )
+
+
+validate_kconfig_defaults()
+
+# Fallbacks match IDF Kconfig defaults: components/ulp/Kconfig
+# In practice, auto-injection in arduino.py sets RESERVE_MEM=8192 via
+# custom_sdkconfig, so the 4096 fallback only applies if the user
+# explicitly omits that config entry.
+# ULP_SHARED_MEM = sizeof(ulp_lp_core_memory_shared_cfg_t), enforced by
+# ESP_STATIC_ASSERT in ulp_lp_core_memory_shared.c
+ULP_RESERVE_MEM = get_sdkconfig_value("CONFIG_ULP_COPROC_RESERVE_MEM", 4096)
 ULP_SHARED_MEM = get_sdkconfig_value("CONFIG_ULP_SHARED_MEM", 16)
 
 
@@ -170,7 +231,6 @@ def generate_sdkconfig_h():
     lines.append("")
     content = "\n".join(lines)
 
-    # Only write if changed to avoid unnecessary rebuilds
     if GENERATED_SDKCONFIG_H.exists() and GENERATED_SDKCONFIG_H.read_text() == content:
         return
     GENERATED_SDKCONFIG_H.write_text(content)
@@ -178,9 +238,16 @@ def generate_sdkconfig_h():
 
 if USER_SDKCONFIG_H.exists():
     SDKCONFIG_H = USER_SDKCONFIG_H
+    print("Using user-provided ULP sdkconfig.h")
 else:
-    generate_sdkconfig_h()
-    SDKCONFIG_H = GENERATED_SDKCONFIG_H
+    recompiled = find_recompiled_sdkconfig_h()
+    if recompiled:
+        SDKCONFIG_H = recompiled
+        print("Using recompiled sdkconfig.h from libs package")
+    else:
+        generate_sdkconfig_h()
+        SDKCONFIG_H = GENERATED_SDKCONFIG_H
+        print("Using auto-generated minimal sdkconfig.h")
 
 #
 # Source files
@@ -195,43 +262,48 @@ def collect_ulp_sources():
 
 
 def collect_idf_sources():
-    sources = [
-        LP_CORE_DIR / "start.S",
-        LP_CORE_DIR / "vector.S",
-        LP_CORE_DIR / "port" / mcu / "vector_table.S",
-        LP_CORE_DIR / "lp_core_startup.c",
-        LP_CORE_DIR / "lp_core_utils.c",
-        LP_CORE_DIR / "lp_core_i2c.c",
-        LP_CORE_DIR / "lp_core_interrupt.c",
-        LP_CORE_DIR / "lp_core_panic.c",
-        LP_CORE_DIR / "lp_core_print.c",
-        LP_CORE_DIR / "lp_core_uart.c",
-        LP_CORE_DIR / "lp_core_ubsan.c",
-        LP_CORE_DIR / "lp_core_spi.c",
-        IDF_COMPONENTS / "hal" / "uart_hal_iram.c",
-        IDF_COMPONENTS / "hal" / "uart_hal.c",
-        LP_SHARED_DIR / "ulp_lp_core_memory_shared.c",
-        LP_SHARED_DIR / "ulp_lp_core_lp_timer_shared.c",
-        LP_SHARED_DIR / "ulp_lp_core_lp_uart_shared.c",
-        LP_SHARED_DIR / "ulp_lp_core_critical_section_shared.c",
-        LP_SHARED_DIR / "ulp_lp_core_lp_adc_shared.c",
-        LP_SHARED_DIR / "ulp_lp_core_lp_vad_shared.c",
-    ]
+    # Auto-discover LP-Core runtime and shared sources from IDF.
+    # Files that need MCU-specific headers not available on all targets
+    # are gated via the MCU config table (e.g. touch sensor on P4 only).
+    sources = []
 
-    touch_src = LP_CORE_DIR / "lp_core_touch.c"
-    if mcu_config.get("has_touch") and touch_src.exists():
-        sources.append(touch_src)
+    # LP-Core runtime sources
+    for src in sorted(LP_CORE_DIR.glob("*.c")) + sorted(LP_CORE_DIR.glob("*.S")):
+        if src.name == "lp_core_touch.c" and not mcu_config.get("has_touch"):
+            continue
+        sources.append(src)
+
+    # Per-MCU vector table
+    port_dir = LP_CORE_DIR / "port" / mcu
+    if port_dir.is_dir():
+        for src in sorted(port_dir.glob("*.S")) + sorted(port_dir.glob("*.c")):
+            sources.append(src)
+
+    # Shared memory / timer / UART / ADC sources
+    for src in sorted(LP_SHARED_DIR.glob("*.c")):
+        sources.append(src)
+
+    # UART HAL (needed by LP-Core UART driver)
+    for name in ("uart_hal_iram.c", "uart_hal.c"):
+        hal_src = IDF_COMPONENTS / "hal" / name
+        if hal_src.exists():
+            sources.append(hal_src)
 
     return [s for s in sources if s.exists()]
 
 
 #
-# Include directories
+# Include directories. This list is explicit (not auto-discovered) because
+# LP-Core cross-compilation can only use a subset of framework headers.
+# Including incorrect headers (e.g. newlib wrappers, FreeRTOS) causes
+# hard-to-debug compilation failures. Non-existent paths are filtered below
+# for forward-compatibility with changed directory layouts.
 #
 
 INCLUDES = [
     ULP_DIR,
     ULP_BUILD_DIR,
+    SDKCONFIG_H.parent,  # so #include "sdkconfig.h" in IDF sources resolves
     IDF_COMPONENTS / "ulp" / "lp_core" / "include",
     IDF_COMPONENTS / "ulp" / "ulp_common" / "include",
     LP_CORE_DIR / "include",
@@ -263,16 +335,26 @@ INCLUDES = [
     FW_LIBS / "heap" / "include",
 ]
 
+_INCLUDES_BEFORE = len(INCLUDES)
 INCLUDES = [inc for inc in INCLUDES if inc.exists()]
+if len(INCLUDES) < _INCLUDES_BEFORE // 2:
+    sys.stderr.write(
+        "Warning: only %d of %d expected LP-Core include paths exist.\n"
+        "  framework-arduinoespressif32-libs header layout may have changed.\n"
+        "  ULP compilation will likely fail with missing headers.\n"
+        % (len(INCLUDES), _INCLUDES_BEFORE)
+    )
 
 #
 # Compiler and linker flags (matching toolchain-lp-core-riscv.cmake)
 #
 
+_MARCH = "-march=" + mcu_config["march"]
+
 CFLAGS = [
     "-include", str(SDKCONFIG_H),
     "-Os", "-ggdb",
-    "-march=rv32imac_zicsr_zifencei",
+    _MARCH,
     "-mdiv",
     "-fdata-sections", "-ffunction-sections",
     "-fno-builtin",
@@ -281,13 +363,13 @@ CFLAGS = [
 
 ASFLAGS = [
     "-include", str(SDKCONFIG_H),
-    "-march=rv32imac_zicsr_zifencei",
+    _MARCH,
     "-x", "assembler-with-cpp",
     "-DIS_ULP_COCPU",
 ]
 
 LDFLAGS = [
-    "-march=rv32imac_zicsr_zifencei",
+    _MARCH,
     "-nostartfiles",
     "-Wl,--gc-sections",
     "-Wl,--no-warn-rwx-segments",
@@ -515,10 +597,16 @@ def build_lp_core(target, source, env):
 # when needed.
 #
 
+# Match lp_ram_seg definition in memory.ld. Uses re.DOTALL so the .*? in the
+# org expression can span newlines (some MCU prebuilts split across lines).
+# Group 1: everything up to and including the org expression
+# Group 2: ", len = "
+# Group 3: the len expression (rest of line)
 _LP_RAM_SEG_RE = re.compile(
-    r"(lp_ram_seg\s*\(RW\)\s*:\s*org\s*=\s*0x[0-9a-fA-F]+)"
-    r"(\s*,\s*len\s*=\s*)"
-    r"([^\n]+)"
+    r"(lp_ram_seg\s*\(\s*RW\s*\)\s*:\s*org\s*=\s*)(.*?)"
+    r"(,\s*len\s*=\s*)"
+    r"([^\n]+)",
+    re.DOTALL,
 )
 
 
@@ -544,13 +632,16 @@ def patch_memory_ld():
             "  The LP-Core binary will fail to load at runtime.\n" % src_ld
         )
         env.Exit(1)
-        print("memory.ld already reserves LP SRAM for ULP — no patching needed")
-        return
 
-    patched = _LP_RAM_SEG_RE.sub(
-        r"\1 + %d\2\3 - %d" % (ULP_RESERVE_MEM, ULP_RESERVE_MEM),
-        text,
+    # Insert ULP_RESERVE_MEM offset into the org expression and subtract
+    # from the len expression to keep total segment size unchanged
+    org_expr = match.group(2).rstrip()
+    len_expr = match.group(4).rstrip()
+    patched_seg = "%s(%s) + %d%s(%s) - %d" % (
+        match.group(1), org_expr, ULP_RESERVE_MEM,
+        match.group(3), len_expr, ULP_RESERVE_MEM,
     )
+    patched = text[:match.start()] + patched_seg + text[match.end():]
 
     patched_ld_dir = ULP_BUILD_DIR / "ld"
     patched_ld_dir.mkdir(parents=True, exist_ok=True)
@@ -604,6 +695,15 @@ env.Append(LINKFLAGS=["-T", str(LP_MAPGEN_LD)])
 ulp_lib = FW_LIBS_DIR / mcu / "lib" / "libulp.a"
 if ulp_lib.exists():
     env.Append(LIBS=[env.File(str(ulp_lib))])
+else:
+    sys.stderr.write(
+        "Error: libulp.a not found at %s\n"
+        "  This library is produced by lib recompilation with ULP enabled.\n"
+        "  The auto-injection should have triggered this — if you see this\n"
+        "  error, the recompilation may have failed. Try a clean build:\n"
+        "    pio run -t clean && pio run\n" % ulp_lib
+    )
+    env.Exit(1)
 
 patch_memory_ld()
 

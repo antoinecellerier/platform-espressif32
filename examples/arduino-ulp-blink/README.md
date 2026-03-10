@@ -13,11 +13,13 @@ This example demonstrates running a C program on the LP-Core (ULP) coprocessor u
 ## How it works
 
 Place LP-Core sources in the `ulp/` directory. The platform automatically:
-- Compiles them with the RISC-V ULP toolchain
+- Detects the `ulp/` directory and configures ULP support (sdkconfig, components, lib recompilation)
+- Compiles ULP sources with the RISC-V LP-Core toolchain
 - Generates `ulp_main.h` (symbol map) and `ulp_main_bin.h` (binary declarations)
 - Embeds the binary into the main firmware
+- Links `libulp.a` for `ulp_lp_core_load_binary()` and `ulp_lp_core_run()` APIs
 
-The `custom_sdkconfig` entries in `platformio.ini` trigger a one-time lib recompilation that enables the `ulp_lp_core_load_binary()` and `ulp_lp_core_run()` APIs and produces a correct memory layout.
+No `custom_sdkconfig`, `custom_component_remove`, or `lib_ignore` entries are needed — the platform handles everything. The first build triggers a one-time lib recompilation.
 
 ## Hardware Required
 

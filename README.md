@@ -74,7 +74,7 @@ framework = arduino
 board = esp32-c6-devkitc-1
 ```
 
-The builder generates `ulp_main.h` (symbol map) and `ulp_main_bin.h` (binary declarations) in the build directory, available via `#include`. An optional `ulp/sdkconfig.h` can override the default ULP configuration (8 KB reserved memory).
+The builder generates `ulp_main.h` (symbol map) and `ulp_main_bin.h` (binary declarations) in the build directory, available via `#include`. The first build triggers a one-time lib recompilation to enable ULP loader APIs. An optional `ulp/sdkconfig.h` can override the default ULP configuration (8 KB reserved memory).
 
 See the [arduino-ulp-blink](examples/arduino-ulp-blink/) example for a complete working project. For ESP-IDF or hybrid (arduino + espidf) projects, the existing CMake-based ULP pipeline is used instead — see [espidf-ulp-lp](examples/espidf-ulp-lp/) and [espidf-arduino-C6-ULP-blink](examples/espidf-arduino-C6-ULP-blink/).
 

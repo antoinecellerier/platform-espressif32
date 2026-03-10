@@ -594,6 +594,7 @@ class Espressif32Platform(PlatformBase):
 
         # LP-Core ULP builds need framework-espidf for runtime sources, linker
         # scripts, and esp32ulp_mapgen.py — even for Arduino-only projects.
+        # Keep in sync with LP_CORE_MCUS in ulp_lp_core.py
         lp_core_mcus = ("esp32c5", "esp32c6", "esp32p4")
         if mcu in lp_core_mcus:
             project_dir = Path(ProjectConfig.get_instance().path).parent
@@ -770,6 +771,13 @@ class Espressif32Platform(PlatformBase):
 
             if "espidf" in frameworks:
                 self._install_common_idf_packages()
+
+            # LP-Core ULP lib recompilation needs CMake and ninja
+            # Keep in sync with LP_CORE_MCUS in ulp_lp_core.py
+            if "espidf" not in frameworks and mcu in ("esp32c5", "esp32c6", "esp32p4"):
+                project_dir = Path(ProjectConfig.get_instance().path).parent
+                if (project_dir / "ulp").is_dir():
+                    self._install_common_idf_packages()
 
             self._configure_rom_elfs_for_exception_decoder(variables)
             self._configure_check_tools(variables)
