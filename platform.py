@@ -592,6 +592,14 @@ class Espressif32Platform(PlatformBase):
             safe_remove_directory_pattern(Path(self.packages_dir), f"framework-espidf.*")
             self.packages["framework-espidf"]["optional"] = False
 
+        # LP-Core ULP builds need framework-espidf for runtime sources, linker
+        # scripts, and esp32ulp_mapgen.py — even for Arduino-only projects.
+        lp_core_mcus = ("esp32c5", "esp32c6", "esp32p4")
+        if mcu in lp_core_mcus:
+            project_dir = Path(ProjectConfig.get_instance().path).parent
+            if (project_dir / "ulp").is_dir():
+                self.packages["framework-espidf"]["optional"] = False
+
     def _get_mcu_config(self, mcu: str) -> Optional[Dict]:
         """Get MCU configuration with optimized caching and search."""
         if mcu in self._mcu_config_cache:

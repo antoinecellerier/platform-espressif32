@@ -996,3 +996,10 @@ if ("arduino" in pioframework and "espidf" not in pioframework and
 
     build_script_path = str(Path(FRAMEWORK_DIR) / "tools" / "pioarduino-build.py")
     SConscript(build_script_path)
+
+    # LP-Core ULP support for Arduino-only builds
+    ulp_dir = Path(env.subst("$PROJECT_DIR")) / "ulp"
+    if ulp_dir.is_dir() and any(
+        f.suffix in (".c", ".S", ".s") for f in ulp_dir.iterdir() if f.is_file()
+    ):
+        SConscript("ulp_lp_core.py", exports="env")
