@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -189,39 +188,25 @@ SDKCONFIG_CMAKE = generate_sdkconfig_cmake()
 #
 # Component include paths for ULP compilation
 #
-# IDF's ULP CMake build adds core ULP includes automatically. We only need
-# to provide the framework-arduinoespressif32-libs paths for soc/hal headers.
-# Non-existent paths are filtered for forward-compatibility.
+# IDF's ULP CMake build adds core ULP includes automatically. We provide
+# framework-arduinoespressif32-libs paths for soc/hal headers, discovered
+# automatically by scanning the libs package directory tree.
 #
 
-FW_LIBS = FW_LIBS_DIR / mcu / "include"
+FW_LIBS_INCLUDE = FW_LIBS_DIR / mcu / "include"
 
-COMPONENT_INCLUDES = [
-    str(ULP_DIR),
-    str(SDKCONFIG_H.parent),
-    str(FW_LIBS / "soc" / mcu / "include"),
-    str(FW_LIBS / "soc" / mcu / "register"),
-    str(FW_LIBS / "soc" / "include"),
-    str(FW_LIBS / "hal" / "include"),
-    str(FW_LIBS / "hal" / mcu / "include"),
-    str(FW_LIBS / "hal" / "platform_port" / "include"),
-    str(FW_LIBS / "esp_common" / "include"),
-    str(FW_LIBS / "esp_rom" / "include"),
-    str(FW_LIBS / "esp_rom" / mcu),
-    str(FW_LIBS / "esp_rom" / mcu / "include"),
-    str(FW_LIBS / "esp_rom" / mcu / "include" / mcu),
-    str(FW_LIBS / "esp_hw_support" / "include"),
-    str(FW_LIBS / "esp_hw_support" / "include" / "soc"),
-    str(FW_LIBS / "esp_hw_support" / "include" / "soc" / mcu),
-    str(FW_LIBS / "esp_hw_support" / "port" / mcu),
-    str(FW_LIBS / "esp_hw_support" / "port" / mcu / "include"),
-    str(FW_LIBS / "riscv" / "include"),
-    str(FW_LIBS / "log" / "include"),
-    str(FW_LIBS / "esp_timer" / "include"),
-    str(FW_LIBS / "esp_driver_uart" / "include"),
-    str(FW_LIBS / "heap" / "include"),
-]
-COMPONENT_INCLUDES = [p for p in COMPONENT_INCLUDES if os.path.isdir(p)]
+
+def discover_component_includes():
+    includes = [str(ULP_DIR), str(SDKCONFIG_H.parent)]
+    if not FW_LIBS_INCLUDE.is_dir():
+        return includes
+    for sub in sorted(FW_LIBS_INCLUDE.rglob("*")):
+        if sub.is_dir() and sub.name in ("include", "register", mcu):
+            includes.append(str(sub))
+    return includes
+
+
+COMPONENT_INCLUDES = discover_component_includes()
 
 #
 # Prepare build environment
@@ -356,56 +341,38 @@ def generate_ulp_assembly():
     )
 
 #
-# Patch memory.ld to reserve LP SRAM for the ULP binary
+# Validate memory.ld has ULP reservation from lib recompile
+#
+# IDF's linker template uses `#if CONFIG_ULP_COPROC_ENABLED` to offset
+# lp_ram_seg. Since arduino.py injects CONFIG_ULP_COPROC_RESERVE_MEM into
+# the lib recompile, the output memory.ld already has the correct layout.
+# We just validate it here rather than patching.
 #
 
 # Default matches the auto-injected value in arduino.py (_ulp_sdkconfig_entries)
 ULP_RESERVE_MEM = get_sdkconfig_value("CONFIG_ULP_COPROC_RESERVE_MEM", 8192)
 
-_LP_RAM_SEG_RE = re.compile(
-    r"(lp_ram_seg\s*\(\s*RW\s*\)\s*:\s*org\s*=\s*)(.*?)"
-    r"(,\s*len\s*=\s*)"
-    r"([^\n]+)",
-    re.DOTALL,
-)
 
-
-def patch_memory_ld():
-    fw_ld_dir = FW_LIBS_DIR / mcu / "ld"
-    src_ld = fw_ld_dir / "memory.ld"
-
+def validate_memory_ld():
+    src_ld = FW_LIBS_DIR / mcu / "ld" / "memory.ld"
     if not src_ld.exists():
-        return
-
-    text = src_ld.read_text()
-
-    if "+ %d" % ULP_RESERVE_MEM in text or "+%d" % ULP_RESERVE_MEM in text:
-        return
-
-    match = _LP_RAM_SEG_RE.search(text)
-    if not match:
         sys.stderr.write(
-            "Error: lp_ram_seg not found in %s — cannot reserve LP SRAM.\n"
-            "  The LP-Core binary will fail to load at runtime.\n" % src_ld
+            "Error: memory.ld not found at %s\n"
+            "  Run a clean build: pio run -t clean && pio run\n" % src_ld
         )
         env.Exit(1)
 
-    org_expr = match.group(2).rstrip()
-    len_expr = match.group(4).rstrip()
-    patched_seg = "%s(%s) + %d%s(%s) - %d" % (
-        match.group(1), org_expr, ULP_RESERVE_MEM,
-        match.group(3), len_expr, ULP_RESERVE_MEM,
-    )
-    patched = text[:match.start()] + patched_seg + text[match.end():]
+    text = src_ld.read_text()
+    if "+ %d" % ULP_RESERVE_MEM in text or "+%d" % ULP_RESERVE_MEM in text:
+        return
 
-    patched_ld_dir = Path(ULP_BUILD_DIR) / "ld"
-    patched_ld_dir.mkdir(parents=True, exist_ok=True)
-    (patched_ld_dir / "memory.ld").write_text(patched)
-    env.Prepend(LIBPATH=[str(patched_ld_dir)])
-    print(
-        "Patched memory.ld: lp_ram_seg offset by %d bytes for LP-Core binary"
-        % ULP_RESERVE_MEM
+    sys.stderr.write(
+        "Error: memory.ld does not reserve LP SRAM for ULP (%d bytes).\n"
+        "  This should have been set during lib recompilation with\n"
+        "  CONFIG_ULP_COPROC_RESERVE_MEM=%d. Run a clean build:\n"
+        "    pio run -t clean && pio run\n" % (ULP_RESERVE_MEM, ULP_RESERVE_MEM)
     )
+    env.Exit(1)
 
 #
 # SCons build graph
@@ -451,6 +418,6 @@ else:
     )
     env.Exit(1)
 
-patch_memory_ld()
+validate_memory_ld()
 
 print("LP-Core ULP support enabled for %s (reserve=%d bytes)" % (mcu, ULP_RESERVE_MEM))
