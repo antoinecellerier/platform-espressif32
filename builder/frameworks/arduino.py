@@ -558,21 +558,20 @@ if board_sdkconfig:
 # Auto-configure ULP support when ulp/ directory with sources is present on an
 # LP-Core MCU. Injects custom_sdkconfig entries to trigger lib recompilation
 # with ULP loader functions, and removes components that break the recompile.
-# Keep in sync with LP_CORE_MCUS and ULP_SOURCE_SUFFIXES in ulp_lp_core.py
-_lp_core_mcus = ("esp32c5", "esp32c6", "esp32p4")
-_ulp_source_suffixes = (".c", ".S", ".s")
+
+from ulp_configs import LP_CORE_MCUS, ULP_SOURCE_SUFFIXES
 
 
 def _has_ulp_sources(ulp_dir):
     """Check if a directory tree contains LP-Core source files."""
     return ulp_dir.is_dir() and any(
-        f.suffix in _ulp_source_suffixes
+        f.suffix in ULP_SOURCE_SUFFIXES
         for f in ulp_dir.rglob("*") if f.is_file()
     )
 
 
 _ulp_dir = Path(project_dir) / "ulp"
-if mcu in _lp_core_mcus and _has_ulp_sources(_ulp_dir):
+if mcu in LP_CORE_MCUS and _has_ulp_sources(_ulp_dir):
     _ulp_sdkconfig_entries = [
         "CONFIG_ULP_COPROC_ENABLED=y",
         "CONFIG_ULP_COPROC_TYPE_LP_CORE=y",
@@ -1073,4 +1072,4 @@ if ("arduino" in pioframework and "espidf" not in pioframework and
 
     # LP-Core ULP support for Arduino-only builds
     if _has_ulp_sources(Path(env.subst("$PROJECT_DIR")) / "ulp"):
-        SConscript("ulp_lp_core.py", exports="env")
+        SConscript("arduino_ulp.py", exports="env")

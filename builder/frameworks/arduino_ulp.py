@@ -23,6 +23,8 @@ from SCons.Script import Import, Return
 
 Import("env")
 
+from ulp_configs import LP_CORE_MCUS, ULP_SOURCE_SUFFIXES
+
 # Skip when the CMake-based ulp.py handles ULP compilation
 if "espidf" in env.subst("$PIOFRAMEWORK"):
     Return()
@@ -30,14 +32,6 @@ if "espidf" in env.subst("$PIOFRAMEWORK"):
 platform = env.PioPlatform()
 board = env.BoardConfig()
 mcu = board.get("build.mcu", "esp32")
-
-#
-# Per-MCU LP-Core configuration
-# Keep in sync with _lp_core_mcus in arduino.py and platform.py
-#
-
-LP_CORE_MCUS = ("esp32c5", "esp32c6", "esp32p4")
-ULP_SOURCE_SUFFIXES = (".c", ".S", ".s")
 
 if mcu not in LP_CORE_MCUS:
     Return()
@@ -61,7 +55,7 @@ ULP_DIR = PROJECT_DIR / "ulp"
 if not _has_ulp_sources(ULP_DIR):
     Return()
 
-ULP_BUILD_DIR = str(BUILD_DIR / "ulp_lp_core")
+ULP_BUILD_DIR = str(BUILD_DIR / "arduino_ulp")
 
 FRAMEWORK_DIR = platform.get_package_dir("framework-espidf")
 if not FRAMEWORK_DIR or not os.path.isdir(FRAMEWORK_DIR):

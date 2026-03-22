@@ -57,6 +57,13 @@ from platformio.proc import get_pythonexe_path
 from platformio.project.config import ProjectConfig
 from platformio.package.manager.tool import ToolPackageManager
 
+_ulp_configs_path = Path(__file__).parent / "builder" / "frameworks" / "ulp_configs.py"
+_ulp_spec = importlib.util.spec_from_file_location("ulp_configs", str(_ulp_configs_path))
+_ulp_configs = importlib.util.module_from_spec(_ulp_spec)
+_ulp_spec.loader.exec_module(_ulp_configs)
+LP_CORE_MCUS = _ulp_configs.LP_CORE_MCUS
+ULP_SOURCE_SUFFIXES = _ulp_configs.ULP_SOURCE_SUFFIXES
+
 
 # Import penv_setup functionality using explicit module loading for centralized Python environment management
 penv_setup_path = Path(__file__).parent / "builder" / "penv_setup.py"
@@ -594,13 +601,10 @@ class Espressif32Platform(PlatformBase):
 
         # LP-Core ULP builds need framework-espidf for runtime sources, linker
         # scripts, and esp32ulp_mapgen.py — even for Arduino-only projects.
-        # Keep in sync with LP_CORE_MCUS and ULP_SOURCE_SUFFIXES in ulp_lp_core.py
-        lp_core_mcus = ("esp32c5", "esp32c6", "esp32p4")
-        ulp_suffixes = (".c", ".S", ".s")
-        if mcu in lp_core_mcus:
+        if mcu in LP_CORE_MCUS:
             ulp_dir = Path(ProjectConfig.get_instance().path).parent / "ulp"
             if ulp_dir.is_dir() and any(
-                f.suffix in ulp_suffixes for f in ulp_dir.rglob("*") if f.is_file()
+                f.suffix in ULP_SOURCE_SUFFIXES for f in ulp_dir.rglob("*") if f.is_file()
             ):
                 self.packages["framework-espidf"]["optional"] = False
 
@@ -776,11 +780,10 @@ class Espressif32Platform(PlatformBase):
                 self._install_common_idf_packages()
 
             # LP-Core ULP lib recompilation needs CMake and ninja
-            # Keep in sync with LP_CORE_MCUS and ULP_SOURCE_SUFFIXES in ulp_lp_core.py
-            if "espidf" not in frameworks and mcu in ("esp32c5", "esp32c6", "esp32p4"):
+            if "espidf" not in frameworks and mcu in LP_CORE_MCUS:
                 ulp_dir = Path(ProjectConfig.get_instance().path).parent / "ulp"
                 if ulp_dir.is_dir() and any(
-                    f.suffix in (".c", ".S", ".s") for f in ulp_dir.rglob("*") if f.is_file()
+                    f.suffix in ULP_SOURCE_SUFFIXES for f in ulp_dir.rglob("*") if f.is_file()
                 ):
                     self._install_common_idf_packages()
 
