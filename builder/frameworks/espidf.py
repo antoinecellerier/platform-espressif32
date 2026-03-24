@@ -357,8 +357,21 @@ def HandleArduinoIDFsettings(env):
             else:
                 flash_memory_type = memory_type
 
+        # When custom_sdkconfig triggers a lib recompile, skip flash mode,
+        # flash/PSRAM frequency, and SPIRAM auto-detection from the board JSON.
+        # These settings change the linker section layout (memory.ld, sections.ld),
+        # making recompiled components incompatible with precompiled binary blobs
+        # (WiFi, BT) that expect the framework-default layout. By keeping the
+        # framework defaults (typically QIO/80MHz/SPIRAM=y), only the user's
+        # explicit custom_sdkconfig entries (e.g. CONFIG_ESP_WIFI_DPP_SUPPORT=y)
+        # are changed — esptool still applies the board's actual flash mode/freq
+        # at flash time independently of sdkconfig.
+        skip_section_layout_settings = flag_custom_sdkonfig
+        if skip_section_layout_settings:
+            print("Info: Skipping flash/SPIRAM auto-detection (custom_sdkconfig active)")
+
         # Add flash mode to sdkconfig
-        if flash_mode:
+        if flash_mode and not skip_section_layout_settings:
             flash_mode_lower = flash_mode.lower()
             board_config_flags.append(f"CONFIG_ESPTOOLPY_FLASHMODE_{flash_mode.upper()}=y")
 
@@ -369,7 +382,7 @@ def HandleArduinoIDFsettings(env):
                     board_config_flags.append(f"# CONFIG_ESPTOOLPY_FLASHMODE_{mode.upper()} is not set")
 
         # Override flash_memory_type if boot mode indicates OPI
-        if boot_mode == "opi" or flash_mode in ["dout", "opi"]:
+        if not skip_section_layout_settings and (boot_mode == "opi" or flash_mode in ["dout", "opi"]):
             if not flash_memory_type or flash_memory_type.lower() != "opi":
                 flash_memory_type = "opi"
                 print(f"Info: Detected OPI Flash via boot_mode='{boot_mode}' or flash_mode='{flash_mode}'")
@@ -439,7 +452,7 @@ def HandleArduinoIDFsettings(env):
         # Handle Flash and PSRAM frequency configuration with platformio.ini override support
         # Priority: platformio.ini > board.json manifest
         # From 80MHz onwards, Flash and PSRAM frequencies must be identical
-        
+
         # Get f_flash with override support
         f_flash = None
         if hasattr(env, 'GetProjectOption'):
@@ -495,7 +508,7 @@ def HandleArduinoIDFsettings(env):
             flash_compile_freq = compile_freq
             psram_compile_freq = compile_freq
 
-        if f_flash and flash_compile_freq and psram_compile_freq:
+        if f_flash and flash_compile_freq and psram_compile_freq and not skip_section_layout_settings:
             # Validate and parse frequency values
             try:
                 flash_freq_val = int(str(flash_compile_freq).replace("000000L", ""))
@@ -549,27 +562,30 @@ def HandleArduinoIDFsettings(env):
                     board_config_flags.append("CONFIG_SPI_FLASH_HPM_AUTO=y")
 
         # Check for PSRAM support based on board flags
-        extra_flags = board.get("build.extra_flags", "")
-        # Handle both string and list formats
-        if isinstance(extra_flags, str):
-            has_psram = "-DBOARD_HAS_PSRAM" in extra_flags
+        if not skip_section_layout_settings:
+            extra_flags = board.get("build.extra_flags", "")
+            # Handle both string and list formats
+            if isinstance(extra_flags, str):
+                has_psram = "-DBOARD_HAS_PSRAM" in extra_flags
+            else:
+                has_psram = any("-DBOARD_HAS_PSRAM" in flag for flag in extra_flags)
+
+            # Additional PSRAM detection methods
+            if not has_psram:
+                # Check if memory_type contains psram indicators
+                if memory_type and ("opi" in memory_type.lower() or "psram" in memory_type.lower()):
+                    has_psram = True
+                # Check build.psram_type
+                elif "psram_type" in board.get("build", {}):
+                    has_psram = True
+                # Check for SPIRAM mentions in extra_flags
+                elif isinstance(extra_flags, str) and "PSRAM" in extra_flags:
+                    has_psram = True
+                elif not isinstance(extra_flags, str) and any("PSRAM" in str(flag) for flag in extra_flags):
+                    has_psram = True
         else:
-            has_psram = any("-DBOARD_HAS_PSRAM" in flag for flag in extra_flags)
-        
-        # Additional PSRAM detection methods
-        if not has_psram:
-            # Check if memory_type contains psram indicators
-            if memory_type and ("opi" in memory_type.lower() or "psram" in memory_type.lower()):
-                has_psram = True
-            # Check build.psram_type
-            elif "psram_type" in board.get("build", {}):
-                has_psram = True
-            # Check for SPIRAM mentions in extra_flags
-            elif isinstance(extra_flags, str) and "PSRAM" in extra_flags:
-                has_psram = True
-            elif not isinstance(extra_flags, str) and any("PSRAM" in str(flag) for flag in extra_flags):
-                has_psram = True
-        
+            has_psram = False  # skip — framework defaults preserved
+
         if has_psram:
             # Enable basic SPIRAM support
             board_config_flags.append("CONFIG_SPIRAM=y")
@@ -634,14 +650,14 @@ def HandleArduinoIDFsettings(env):
                         "# CONFIG_SPIRAM_MODE_OCT is not set",
                         "# CONFIG_SPIRAM_MODE_QUAD is not set"
                     ])
-        else:
+        elif not skip_section_layout_settings:
             # Explicitly disable PSRAM if not present
             board_config_flags.extend([
                 "# CONFIG_SPIRAM is not set"
             ])
 
         # Use flash_memory_type for flash config
-        if flash_memory_type and "opi" in flash_memory_type.lower():
+        if not skip_section_layout_settings and flash_memory_type and "opi" in flash_memory_type.lower():
             # OPI Flash configurations require specific settings
             # According to ESP-IDF documentation, OPI flash must use DOUT mode for bootloader
             # The bootloader starts in DOUT mode and switches to OPI at runtime
@@ -785,7 +801,6 @@ def HandleArduinoIDFsettings(env):
         custom_sdk_config_flags = env.GetProjectOption("custom_sdkconfig").rstrip("\n") + "\n"
     
     write_sdkconfig_file(idf_config_list, custom_sdk_config_flags)
-
 
 
 def HandleCOMPONENTsettings(env):
